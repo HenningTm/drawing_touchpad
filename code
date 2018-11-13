@@ -1,0 +1,664 @@
+import ui
+import photos
+import console
+import Image
+from io import BytesIO
+import os
+import PIL
+import numpy as np
+from random import randint
+import spline # Smoothing out lines
+import xlsxwriter # Writing trial data
+import openpyxl
+import math
+
+# Convert from ui.image to PIL Image
+def ui_to_pil(img):
+    im = Image.open(BytesIO(img.to_png()))
+    return im
+# and back
+def pil_to_ui(img):
+    with io.BytesIO() as bIO:
+        img.save(bIO, 'png')
+        return ui.Image.from_data(bIO.getvalue())
+
+def addToImages(img):
+    allImages.append(img)
+    return
+
+def getNewEx():
+    if len(exImages) > 0:
+        r = randint(0,len(exImages) - 1)
+        v['imageview1'].image = exImages[r]
+        # Get pixel matrix
+        pil = ui_to_pil(exImages[r])
+        global pix
+        pix = np.asarray(pil)
+        #
+        global ex_name 
+        ex_name = imgNames[r]
+        exImages.pop(r) # Delete image from array so that there are no repeats
+        imgNames.pop(r)
+        return r
+    else:
+        return -99
+
+def completedPic():
+    v['imageview1'].image = completed_pic
+    return
+
+class PathView (ui.View):
+    def __init__(self, frame):
+        self.frame = frame
+        self.flex = 'WH'
+        self.path = None
+        self.action = None
+        self.x1 = None
+        self.y1 = None
+        self.x2 = None
+        self.y2 = None
+        self.secTouch = None
+        self.points =  []
+        self.dotPts = [] # indices of startpoints for the undo function and dot-drawing
+        self.pointsType = [] # True = Point starts a straight line, False = Point starts a curve
+        self.closed = False
+        # self.thresh = 15  # Threshold for continued drawing
+        self.threshClose = 15 # Threshold for maximum distance for points to snap together
+        self.lineWidth = 3.0
+        self.pointTouched = False
+        self.pointTouchedIdx = 99
+        self.redraw = False
+        self.dotSize = 1
+        self.firstMoved = False
+        self.firstTouch = True
+        self.connected = False
+        self.allowMove = True # Allow movement of drawn points
+        self.allowCurveMove = False # Allow movement of points that connect to a curve
+        self.minDist = 5 # Minimum distance for a movement to register, shouldnt be too small, especially when using a pen
+        self.color = 'black'
+
+        self.touchThresh = 15 # Threshold for drawing on contour
+        self.surroundCheck = 2
+        self.old_path = None
+
+    
+    # def touch_began(self, touch):
+    #     x, y = touch.location
+    #     self.path = ui.Path()
+    #     self.path.line_width = 8.0
+    #     self.path.line_join_style = ui.LINE_JOIN_ROUND
+    #     self.path.line_cap_style = ui.LINE_CAP_ROUND
+    #     self.path.move_to(x, y)
+
+    # def touch_moved(self, touch):
+    #     x, y = touch.location
+    #     self.path.line_to(x, y)
+    #     self.set_needs_display()
+
+    # def touch_ended(self, touch):
+    #     # Send the current path to the SketchView:
+    #     if callable(self.action):
+    #         self.action(self)
+    #     # Clear the view (the path has now been rendered
+    #     # into the SketchView's image view):
+    #     self.path = None
+    #     self.set_needs_display()
+
+    # def touch_began(self,touch):
+    #     self.x1, self.y1 = touch.location
+    #     x = int(self.x1)
+    #     y = int(self.y1)
+    #     x = x * 2
+    #     y = y * 2
+    #     if pix[y,x] < 255:
+    #         # print('Pixel found at: ')
+    #         # print(y, x)
+    #         self.drawDot(touch.location,self.dotSize)
+    #         self.check_area(touch.location, self.surroundCheck)
+    #     return
+
+    # def touch_moved(self,touch):
+    #         self.x1, self.y1 = touch.location
+    #         x = int(self.x1)
+    #         y = int(self.y1)
+    #         x = x * 2
+    #         y = y * 2
+    #         if pix[y,x] < 255:
+    #             # print('Pixel found at: ')
+    #             # print(y, x)
+    #             print(Image.getpixel(x,y))
+    #             self.drawDot(touch.location,self.dotSize)
+    #             # self.check_area(touch.location, self.surroundCheck)
+    #         return
+
+    def check_area(self, t, size): # Checks area around touch for dark pixels and paints them red
+        self.x1, self.y1 = t
+        x = int(self.x1)
+        y = int(self.y1)
+        x = x * 2
+        y = y * 2
+        ptsx = []
+        ptsy = []
+        thresh = 120
+        for xx in range(size):
+            print('x: '+str(xx))
+            for yy in range(size):
+                print('y: '+str(yy))
+                xn = 0
+                yn = 0
+            if pix[y + yy, x + xx] < thresh:
+                xn = (x + xx) * 0.5
+                yn = (y + yy) * 0.5
+                # print(xn)
+                xn = math.ceil(xn)
+                # print(xn)
+                yn = math.ceil(yn)
+                # self.drawDotCoords(xn,yn,self.dotSize)
+                ptsx.append(xn)
+                ptsy.append(yn)
+            if pix[y - yy, x - xx] < thresh:
+                xn = (x - xx) * 0.5
+                yn = (y - yy) * 0.5
+                xn = math.ceil(xn)
+                yn = math.ceil(yn)
+                # self.drawDotCoords(xn,yn,self.dotSize)
+                ptsx.append(xn)
+                ptsy.append(yn)
+            if pix[y + yy, x - xx] < thresh:
+                xn = (x - xx) * 0.5
+                yn = (y + yy) * 0.5
+                xn = math.ceil(xn)
+                yn = math.ceil(yn)
+                # self.drawDotCoords(xn,yn,self.dotSize)
+                ptsx.append(xn)
+                ptsy.append(yn)
+            if pix[y - yy, x + xx] < thresh:
+                xn = (x + xx) * 0.5
+                yn = (y - yy) * 0.5
+                xn = math.ceil(xn)
+                yn = math.ceil(yn)
+                # self.drawDotCoords(xn,yn,self.dotSize)
+                ptsx.append(xn)
+                ptsy.append(yn)
+                # if xn != 0:
+                #     ptsx.append(xn)
+                #     ptsy.append(yn)
+        if len(ptsx) > 0:
+            self.drawDotCoords(ptsx,ptsy,self.dotSize)
+
+    def touch_began_old(self, touch):
+        self.x1, self.y1 = touch.location
+        if self.allowMove == True:
+            self.checkPoint(touch.location.x, touch.location.y)
+        if self.pointTouchedIdx != 99 and self.pointTouchedIdx != len(self.points) - 1:  # Check if drawn point is touched
+            if self.pointTouchedIdx in self.dotPts: # Check if touched point is a starting point
+                idx = self.dotPts.index(self.pointTouchedIdx) # index of touched point within self.dotPts
+                if self.allowCurveMove:
+                    self.pointTouched = True
+                elif self.pointsType[idx] == True and self.pointsType[idx - 1] == True:
+                    self.pointTouched = True
+        else: # Else start drawing new line
+            if self.closed == False:
+                if self.firstTouch == True:
+                    self.drawDot(touch.location,self.dotSize)
+                    self.firstTouch = False
+                    self.connected = True
+                    if lineDraw == True:
+                        self.pointsType.append(True)
+                    else:
+                        self.path = ui.Path()
+                        self.path.line_width = self.lineWidth
+                        self.path.line_join_style = ui.LINE_JOIN_ROUND
+                        self.path.line_cap_style = ui.LINE_CAP_ROUND
+                        self.path.move_to(self.x1, self.y1)
+                        self.pointsType.append(False)
+                    self.points.append(touch.location)
+                    self.dotPts.append(0)
+                else:
+                    if self.checkContinue(self.x1,self.y1) == True:
+                        self.connected = True
+                        if lineDraw == True:
+                            self.x1 = self.points[-1].x
+                            self.y1 = self.points[-1].y
+                            self.pointsType.append(True)
+                        else:
+                            self.path = ui.Path()
+                            self.path.line_width = self.lineWidth
+                            self.path.line_join_style = ui.LINE_JOIN_ROUND
+                            self.path.line_cap_style = ui.LINE_CAP_ROUND
+                            self.path.move_to(self.x1, self.y1)
+                            self.points.append(touch.location)
+                            self.pointsType.append(False)
+                    else:
+                        None
+                        # print('Not connected')
+
+    def touch_moved_old(self, touch):
+        if self.pointTouched == True: # Move a drawn point
+            if self.closed == True and (self.pointTouchedIdx == 0 or self.pointTouchedIdx == len(self.points) - 1):  # Move first and last point simultaneously
+                self.points[0] = touch.location
+                self.points[-1] = touch.location
+            else: # move any other point
+                self.points[self.pointTouchedIdx] = touch.location
+                self.x2 = touch.location.x
+                self.y2 = touch.location.y
+            self.drawAllLines(True)
+        else:
+            if self.closed == False:
+                if self.connected == True:
+                    self.x2, self.y2 = touch.location
+                    self.secTouch = touch.location
+                    if lineDraw == True:
+                        self.path = ui.Path()
+                        self.path.line_width = self.lineWidth
+                        self.path.line_join_style = ui.LINE_JOIN_ROUND
+                        self.path.line_cap_style = ui.LINE_CAP_ROUND
+                        self.path.move_to(self.x1, self.y1)
+                        self.path.line_to(self.x2, self.y2)
+                        self.set_needs_display()
+                    else:
+                        if (abs(self.points[-1].x - self.x2) > self.minDist) or (abs(self.points[-1].y - self.y2) > self.minDist):
+                            self.points.append(touch.location)
+                            self.path.line_to(self.x2, self.y2)
+                            self.set_needs_display()
+
+    def touch_ended_old(self, touch):
+        if self.pointTouched == True: # End moving of drawn point
+            # Check if endpoints need to be connected
+            if (self.pointTouchedIdx == len(self.points) - 1) or (self.pointTouchedIdx == 0):
+                if self.pointTouchedIdx == 0:
+                    self.firstMoved = True
+                else:
+                    self.firstMoved = False
+                if self.firstMoved == False:
+                    if self.checkDist(False) == True:
+                        self.x2 = self.points[0].x
+                        self.y2 = self.points[0].y
+                        self.points[-1] = self.points[0]
+                        self.closed = True
+                        self.drawAllLines(True)
+                else:
+                    if self.checkDist(True) == True:
+                        self.x2 = self.points[-1].x
+                        self.y2 = self.points[-1].y
+                        self.points[0] = self.points[-1]
+                        self.closed = True
+                        self.drawAllLines(True)
+            self.pointTouched = False
+            self.firstMoved = False
+        else:
+            if self.closed == False:
+                if self.connected == True:
+                    if self.checkDist(False) == True: # Check if last drawn point should be connected to first one
+                        self.points.append(self.secTouch)
+                        self.points[-1] = self.points[0]
+                        self.dotPts.append(len(self.points) - 1)
+                        self.closed = True
+                    else: # else draw new line
+                        self.drawDot(self.secTouch, self.dotSize)
+                        if lineDraw == True:
+                            self.points.append(self.secTouch)
+                        self.dotPts.append(len(self.points) - 1)
+                    self.drawAllLines(True)
+                self.connected = False
+
+    def draw(self):
+        ui.set_color('red')
+        # self.old_path.eo_fill_rule = True
+        # self.old_path.add_clip()
+        if self.path:
+            self.path.stroke()
+
+    def drawLine(self,x1,y1,x2,y2):
+        self.path = ui.Path()
+        self.path.line_width = self.lineWidth
+        self.path.line_join_style = ui.LINE_JOIN_ROUND
+        self.path.line_cap_style = ui.LINE_CAP_ROUND
+        self.path.move_to(x1, y1)
+        self.path.line_to(x2, y2)
+        self.set_needs_display()
+        if callable(self.action):
+                self.action(self)
+        self.path = None
+
+    def drawAllLines(self, pts):
+        self.color = 'black'
+        if len(self.points) > 1:
+            self.redraw = True
+            self.path = ui.Path()
+            self.path.line_width = self.lineWidth
+            self.path.line_join_style = ui.LINE_JOIN_ROUND
+            self.path.line_cap_style = ui.LINE_CAP_ROUND
+
+        for i in range(1,len(self.dotPts)):
+            if self.pointsType[i - 1] == True: # Draw straight lines
+                x1 = self.points[self.dotPts[i - 1]].x
+                y1 = self.points[self.dotPts[i - 1]].y
+                x2 = self.points[self.dotPts[i]].x
+                y2 = self.points[self.dotPts[i]].y
+                self.path.move_to(x1, y1)
+                self.path.line_to(x2, y2)
+            else: # draw curves
+                xs = []
+                ys = []
+                for i in range(self.dotPts[i - 1],self.dotPts[i] + 1):
+                    xs.append(self.points[i].x)
+                    ys.append(self.points[i].y)
+                # 2d spline for smoothing
+                sp = spline.Spline2D(xs, ys)
+                s = np.arange(0, sp.s[-1], 0.4)
+                nx, ny = [], []
+                for i_s in s:
+                    ix, iy = sp.calc_position(i_s)
+                    nx.append(ix)
+                    ny.append(iy)
+                for i in range(1, len(nx)):
+                    x1 = np.asscalar(nx[i - 1])
+                    y1 = np.asscalar(ny[i - 1])
+                    x2 = np.asscalar(nx[i])
+                    y2 = np.asscalar(ny[i])
+                    self.path.move_to(x1, y1)
+                    self.path.line_to(x2, y2)
+        self.set_needs_display()
+        # self.path.eo_fill_rule = True
+        # self.path.add_clip()
+        # ui.set_color('white')
+        # rect.fill()
+        self.old_path = self.path
+        if callable(self.action):
+            self.action(self)
+        self.path = None
+        # if pts == True:
+        #     self.color = 'red'
+        #     self.drawDot(self.points[0],self.dotSize)
+        #     self.color = '#1c8526'
+        #     self.drawDot(self.points[-1],self.dotSize)
+        #     self.color = 'red'
+
+    def drawDot(self,pt,size):
+        if type(self.path) != None:
+            self.path = ui.Path.oval(pt.x - size*0.5,pt.y - size*0.5,size,size)
+            self.path.fill()
+            self.set_needs_display()
+            if callable(self.action):
+                    self.action(self)
+        self.path = None
+
+    def drawDotCoords(self,xs,ys,size):
+        if type(self.path) != None:
+            for p in range(len(xs)):
+                self.path = ui.Path.oval(xs[p] - size*0.5, ys[p] - size*0.5,size,size)
+                self.path.fill()
+                self.set_needs_display()
+            if callable(self.action):
+                    self.action(self)
+        self.path = None
+
+    def undoLine(self):
+        if len(self.dotPts) > 1:
+            del self.dotPts[-1]
+            del self.pointsType[-1]
+            self.points = self.points[0:self.dotPts[-1] + 1]
+            self.closed = False
+        else:
+            self.reset()
+
+    def reset(self):
+        self.redraw = True
+        self.firstTouch = True
+        self.closed = False
+        self.points = []
+        self.dotPts = []
+        self.pointsType = []
+        self.pointTouchedIdx = 99
+
+    # checks whether end of line should snap to the first point
+    def checkDist(self, first):
+        if (len(self.points) > 2):
+            if (first == True): # If first point is moved
+                if (abs(self.x2 - self.points[-1].x) < self.threshClose):
+                    if (abs(self.y2 - self.points[-1].y) < self.threshClose):
+                        return True
+            else: # if last point is moved
+                if (abs(self.x2 - self.points[0].x) < self.threshClose):
+                    if (abs(self.y2 - self.points[0].y) < self.threshClose):
+                        return True
+        return False
+
+    # Check if touch continues last drawn point
+    def checkContinue(self, x1, y1):
+        x2, y2 = self.points[-1]
+        if (abs(x1 - x2) < self.thresh) and (abs(y1 - y2) < self.thresh):
+            return True
+        return False
+
+    # Checks whether a drawn point is touched
+    def checkPoint(self, x,  y):
+        for i in range(0, len(self.points)):
+            if (abs(x - self.points[i].x) < self.thresh):
+                if (abs(y - self.points[i].y) < self.thresh):
+                    self.pointTouchedIdx = i
+        if self.pointTouchedIdx != 99:
+            return
+        else:
+            self.pointTouchedIdx = 99
+        return
+
+# The main SketchView contains a PathView for the current
+# line and an ImageView for rendering completed strokes.
+# It also manages the 'Clear' and 'Save' ButtonItems that
+# are shown in the title bar.
+
+class SketchView (ui.View):
+    def __init__(self, width=1024, height=1024):
+        self.bg_color = 'white'
+        global pv
+        iv = ui.ImageView(frame=(0, 0, width, height))
+        pv = PathView(frame=self.bounds)
+        pv.action = self.path_action
+        self.add_subview(iv)
+        self.add_subview(pv)
+        self.image_view = iv
+        self.images = np.empty(0)
+        self.count = 1
+        self.countExample = 12 # sets for how many trials one example picture will be shown
+        self.table = xlsxwriter.Workbook('test.xlsx')
+        self.trial_number = 1
+        self.ex_number = 0
+        self.completed = False
+        self.amountTrials = self.countExample * len(exImages)
+
+        table = openpyxl.load_workbook('VP01_082_p_curve.xlsx')
+        sheet = table['Sheet1']
+
+        for v in range(len(sheet[1])):
+            x = sheet[1][v].value
+            y = sheet[2][v].value
+            pv.points.append(ui.Point(x, y))
+        
+        for v in range(len(sheet[3])):
+            x = sheet[3][v].value
+            if x != None:
+                pv.dotPts.append(x)
+
+        for v in range(len(sheet[4])):
+            x = sheet[4][v].value
+            if x != None:
+                pv.pointsType.append(x)
+
+        pv.drawAllLines(pv.points)
+
+    def path_action(self, sender):
+        if pv.redraw == True:
+            self.image_view.image = None
+            pv.redraw = False
+        path = sender.path
+        old_img = self.image_view.image
+        width, height = self.image_view.width, self.image_view.height
+        with ui.ImageContext(width, height) as ctx:
+            ui.set_color(pv.color)
+            if pv.closed: # Change background color of shape is completed
+                self.bg_color = '#00ef00'
+            else:
+                self.bg_color = 'white'
+            if old_img:
+                old_img.draw()
+            if type(path) != None:
+                path.stroke() # Annoying bug: If line is toggled and you quickly tap twice in the paint area an error is shown. Drawing is still possible, it might just confuse participants
+            self.image_view.image = ctx.get_image()
+
+    def undo_action(self, sender):
+        if len(pv.points) > 1:
+            pv.undoLine()
+            if len(pv.points) > 1:
+                pv.drawAllLines(True)
+            else:
+                pv.reset()
+                self.image_view.image = None
+        else:
+            pv.reset()
+            self.image_view.image = None
+        self.bg_color = 'white'
+
+    def clear_action(self, sender):
+        self.image_view.image = None
+        pv.reset()
+        self.bg_color = 'white'
+
+    def save_action(self, sender):
+        if self.completed == False:
+            if self.image_view.image:
+                if pv.closed:
+                    with ui.ImageContext(self.width, self.height) as ctx:
+                        pv.drawAllLines(False)
+                        self.image_view.image.draw()
+                        img = ctx.get_image()
+                        self.bg_color = 'white'
+                        console.hud_alert('Gespeichert')
+                        # Set directory
+                        datadir = os.path.join('ShapeHenning')
+                        if not os.path.exists(datadir):
+                            os.makedirs(datadir)
+                        # Save image 
+                        photos.save_image(img)
+                        img = ui_to_pil(ctx.get_image())
+                        if self.trial_number < 10:
+                            trial_name = str(participant_number) + '_00' + str(self.trial_number) + '_' + ex_name
+                        elif self.trial_number < 100:
+                            trial_name = str(participant_number) + '_0' + str(self.trial_number) + '_' + ex_name
+                        else:
+                            trial_name = str(participant_number) + '_' + str(self.trial_number) + '_' + ex_name
+                        file_name = datadir + '/' + trial_name
+                        img.save(file_name + '.png')
+                        # Save table of points
+                        self.table = xlsxwriter.Workbook(file_name+'.xlsx')
+                        self.worksheet = self.table.add_worksheet()
+                        pointsx = []
+                        pointsy = []
+                        for i in range(0,len(pv.points)):
+                            pointsx.append(pv.points[i].x)
+                            pointsy.append(pv.points[i].y)
+                        self.worksheet.write_row(0,0,pointsx)
+                        self.worksheet.write_row(1,0,pointsy)
+                        self.worksheet.write_row(2,0,pv.dotPts)
+                        self.worksheet.write_row(3,0,pv.pointsType)
+                        self.table.close()
+                        # Clear image
+                        self.image_view.image = None
+                        pv.reset()
+                        # present new example shape after countExample trials
+                        if (self.count % self.countExample == 0):
+                            self.ex_number = getNewEx()
+                            if self.ex_number == -99: #Check if all examples are done
+                                pv.reset()
+                                self.completed = True
+                                completedPic()
+                                # self.bg_color = 'black'
+                        # Trial counter
+                        self.count = self.count + 1
+                        self.trial_number = self.trial_number + 1
+                        self.updateTrials()
+                        None
+                else:
+                    console.hud_alert('Form ist nicht geschlossen', 'error')
+            else:
+                console.hud_alert('Kein Bild', 'error')
+        else:
+            console.hud_alert('Experiment fertig', 'error')
+    def line_action(self,sender):
+        global lineDraw
+        val = sender.value
+        if val == True:
+            lineDraw = False
+        else:
+            lineDraw = True
+
+    def updateTrials(self):
+        string = str(self.trial_number)+' / '+str(self.amountTrials)
+        trial_label.text = string
+
+# Array to hold all images
+allImages = []
+# Examples shapes
+exImages = []
+# Examples as pil images (maybe just current one)
+pil = []
+pix = []
+# width = 1636
+# height = 1984
+exImages.append(ui.Image('VP01_082_p_curve.jpg'))
+
+
+  
+
+imgNames = ['indent','jagged','p_curve','pjag_f','pjag_m','protr','twirl','bite']
+completed_pic = ui.Image('fertig.png')
+
+# UI initialization
+v = ui.load_view('draw_imp_areas.pyui')
+
+
+# Save button
+save_button = ui.ButtonItem()
+save_button.title = 'Weiter'
+save_button.action = v['view1'].save_action
+# Clear button
+clear_button = ui.ButtonItem()
+clear_button.title = 'Loeschen'
+clear_button.tint_color = 'red'
+clear_button.action = v['view1'].clear_action
+# Undo button
+undo_button = ui.ButtonItem()
+undo_button.title = 'Rueckgaengig'
+undo_button.tint_color = 'black'
+undo_button.action = v['view1'].undo_action
+# Spacing-dummy-button
+spc_button = ui.ButtonItem()
+spc_button.title = 'Spc'
+spc_button.tint_color = 'white'
+# Line toggle switch
+line_button = ui.Switch(x = 15, y = 430) 
+line_button.title = 'Line'
+line_button.tint_color = 'green'
+line_button.action = v['view1'].line_action
+# Line toggle label
+line_label = ui.Label(x=75, y = 395)
+line_label.text = 'Kurve'
+line_label.text_color = 'black'
+v.right_button_items = [save_button, spc_button, clear_button, spc_button, undo_button]
+v.add_subview(line_button)
+v.add_subview(line_label)
+# Trial label
+trial_label = ui.Label(x=940, y = 395)
+trial_label.text = ''
+trial_label.text_color = 'black'
+v.add_subview(trial_label)
+
+print('------------------Start-----------------------')
+lineDraw = True
+participant_number = 'VP01'
+ex_name = ''
+ex_number = getNewEx()
+trial_number = 1
+
+v.present('fullscreen')
